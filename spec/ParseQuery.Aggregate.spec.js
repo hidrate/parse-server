@@ -13,11 +13,15 @@ const masterKeyOptions = {
   json: true
 }
 
+const PointerObject = Parse.Object.extend({
+  className: "PointerObject"
+});
+
 const loadTestData = () => {
-  const data1 = {score: 10, name: 'foo', sender: {group: 'A'}, size: ['S', 'M']};
-  const data2 = {score: 10, name: 'foo', sender: {group: 'A'}, size: ['M', 'L']};
-  const data3 = {score: 10, name: 'bar', sender: {group: 'B'}, size: ['S']};
-  const data4 = {score: 20, name: 'dpl', sender: {group: 'B'}, size: ['S']};
+  const data1 = {score: 10, name: 'foo', sender: {group: 'A'}, views: 900, size: ['S', 'M']};
+  const data2 = {score: 10, name: 'foo', sender: {group: 'A'}, views: 800, size: ['M', 'L']};
+  const data3 = {score: 10, name: 'bar', sender: {group: 'B'}, views: 700, size: ['S']};
+  const data4 = {score: 20, name: 'dpl', sender: {group: 'B'}, views: 700, size: ['S']};
   const obj1 = new TestObject(data1);
   const obj2 = new TestObject(data2);
   const obj3 = new TestObject(data3);
@@ -94,6 +98,110 @@ describe('Parse.Query Aggregate testing', () => {
         expect(resp.results[2].objectId).not.toBe(undefined);
         done();
       }).catch(done.fail);
+  });
+
+  it('group by empty object', (done) => {
+    const obj = new TestObject();
+    const pipeline = [{
+      group: { objectId: {} }
+    }];
+    obj.save().then(() => {
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then((results) => {
+      expect(results[0].objectId).toEqual(null);
+      done();
+    });
+  });
+
+  it('group by empty string', (done) => {
+    const obj = new TestObject();
+    const pipeline = [{
+      group: { objectId: '' }
+    }];
+    obj.save().then(() => {
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then((results) => {
+      expect(results[0].objectId).toEqual(null);
+      done();
+    });
+  });
+
+  it('group by empty array', (done) => {
+    const obj = new TestObject();
+    const pipeline = [{
+      group: { objectId: [] }
+    }];
+    obj.save().then(() => {
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then((results) => {
+      expect(results[0].objectId).toEqual(null);
+      done();
+    });
+  });
+
+  it('group by date object', (done) => {
+    const obj1 = new TestObject();
+    const obj2 = new TestObject();
+    const obj3 = new TestObject();
+    const pipeline = [{
+      group: {
+        objectId: { day: { $dayOfMonth: "$_updated_at" }, month: { $month: "$_created_at" }, year: { $year: "$_created_at" } },
+        count: { $sum: 1 }
+      }
+    }];
+    Parse.Object.saveAll([obj1, obj2, obj3]).then(() => {
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then((results) => {
+      const createdAt = new Date(obj1.createdAt);
+      expect(results[0].objectId.day).toEqual(createdAt.getUTCDate());
+      expect(results[0].objectId.month).toEqual(createdAt.getMonth() + 1);
+      expect(results[0].objectId.year).toEqual(createdAt.getUTCFullYear());
+      done();
+    });
+  });
+
+  it_exclude_dbs(['postgres'])('cannot group by date field (excluding createdAt and updatedAt)', (done) => {
+    const obj1 = new TestObject({ dateField: new Date(1990, 11, 1) });
+    const obj2 = new TestObject({ dateField: new Date(1990, 5, 1) });
+    const obj3 = new TestObject({ dateField: new Date(1990, 11, 1) });
+    const pipeline = [{
+      group: {
+        objectId: { day: { $dayOfMonth: "$dateField" }, month: { $month: "$dateField" }, year: { $year: "$dateField" } },
+        count: { $sum: 1 }
+      }
+    }];
+    Parse.Object.saveAll([obj1, obj2, obj3]).then(() => {
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then(done.fail).catch((error) => {
+      expect(error.code).toEqual(Parse.Error.INVALID_QUERY);
+      done();
+    });
+  });
+
+  it('group by pointer', (done) => {
+    const pointer1 = new TestObject();
+    const pointer2 = new TestObject();
+    const obj1 = new TestObject({ pointer: pointer1 });
+    const obj2 = new TestObject({ pointer: pointer2 });
+    const obj3 = new TestObject({ pointer: pointer1 });
+    const pipeline = [
+      { group: { objectId: '$pointer' } }
+    ];
+    Parse.Object.saveAll([pointer1, pointer2, obj1, obj2, obj3]).then(() => {
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then((results) => {
+      expect(results.length).toEqual(3);
+      expect(results.some(result => result.objectId === pointer1.id)).toEqual(true);
+      expect(results.some(result => result.objectId === pointer2.id)).toEqual(true);
+      expect(results.some(result => result.objectId === null)).toEqual(true);
+      done();
+    });
   });
 
   it('group sum query', (done) => {
@@ -231,7 +339,7 @@ describe('Parse.Query Aggregate testing', () => {
       }).catch(done.fail);
   });
 
-  it('match query', (done) => {
+  it('match comparison query', (done) => {
     const options = Object.assign({}, masterKeyOptions, {
       body: {
         match: { score: { $gt: 15 }},
@@ -245,6 +353,127 @@ describe('Parse.Query Aggregate testing', () => {
       }).catch(done.fail);
   });
 
+  it('match multiple comparison query', (done) => {
+    const options = Object.assign({}, masterKeyOptions, {
+      body: {
+        match: { score: { $gt: 5, $lt: 15 }},
+      }
+    });
+    rp.get(Parse.serverURL + '/aggregate/TestObject', options)
+      .then((resp) => {
+        expect(resp.results.length).toBe(3);
+        expect(resp.results[0].score).toBe(10);
+        expect(resp.results[1].score).toBe(10);
+        expect(resp.results[2].score).toBe(10);
+        done();
+      }).catch(done.fail);
+  });
+
+  it('match complex comparison query', (done) => {
+    const options = Object.assign({}, masterKeyOptions, {
+      body: {
+        match: { score: { $gt: 5, $lt: 15 }, views: { $gt: 850, $lt: 1000 }},
+      }
+    });
+    rp.get(Parse.serverURL + '/aggregate/TestObject', options)
+      .then((resp) => {
+        expect(resp.results.length).toBe(1);
+        expect(resp.results[0].score).toBe(10);
+        expect(resp.results[0].views).toBe(900);
+        done();
+      }).catch(done.fail);
+  });
+
+  it('match comparison and equality query', (done) => {
+    const options = Object.assign({}, masterKeyOptions, {
+      body: {
+        match: { score: { $gt: 5, $lt: 15 }, views: 900},
+      }
+    });
+    rp.get(Parse.serverURL + '/aggregate/TestObject', options)
+      .then((resp) => {
+        expect(resp.results.length).toBe(1);
+        expect(resp.results[0].score).toBe(10);
+        expect(resp.results[0].views).toBe(900);
+        done();
+      }).catch(done.fail);
+  });
+
+  it('match $or query', (done) => {
+    const options = Object.assign({}, masterKeyOptions, {
+      body: {
+        match: { $or: [{ score: { $gt: 15, $lt: 25 } }, { views: { $gt: 750, $lt: 850 } }]},
+      }
+    });
+    rp.get(Parse.serverURL + '/aggregate/TestObject', options)
+      .then((resp) => {
+        expect(resp.results.length).toBe(2);
+        // Match score { $gt: 15, $lt: 25 }
+        expect(resp.results.some(result => result.score === 20)).toEqual(true);
+        expect(resp.results.some(result => result.views === 700)).toEqual(true);
+
+        // Match view { $gt: 750, $lt: 850 }
+        expect(resp.results.some(result => result.score === 10)).toEqual(true);
+        expect(resp.results.some(result => result.views === 800)).toEqual(true);
+        done();
+      }).catch(done.fail);
+  });
+
+  it('match objectId query', (done) => {
+    const obj1 = new TestObject();
+    const obj2 = new TestObject();
+    Parse.Object.saveAll([obj1, obj2]).then(() => {
+      const pipeline = [
+        { match: { objectId: obj1.id } }
+      ];
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then((results) => {
+      expect(results.length).toEqual(1);
+      expect(results[0].objectId).toEqual(obj1.id);
+      done();
+    });
+  });
+
+  it('match field query', (done) => {
+    const obj1 = new TestObject({ name: 'TestObject1'});
+    const obj2 = new TestObject({ name: 'TestObject2'});
+    Parse.Object.saveAll([obj1, obj2]).then(() => {
+      const pipeline = [
+        { match: { name: 'TestObject1' } }
+      ];
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then((results) => {
+      expect(results.length).toEqual(1);
+      expect(results[0].objectId).toEqual(obj1.id);
+      done();
+    });
+  });
+
+  it('match pointer query', (done) => {
+    const pointer1 = new PointerObject();
+    const pointer2 = new PointerObject();
+    const obj1 = new TestObject({ pointer: pointer1 });
+    const obj2 = new TestObject({ pointer: pointer2 });
+    const obj3 = new TestObject({ pointer: pointer1 });
+
+    Parse.Object.saveAll([pointer1, pointer2, obj1, obj2, obj3]).then(() => {
+      const pipeline = [
+        { match: { pointer: pointer1.id } }
+      ];
+      const query = new Parse.Query(TestObject);
+      return query.aggregate(pipeline);
+    }).then((results) => {
+      expect(results.length).toEqual(2);
+      expect(results[0].pointer.objectId).toEqual(pointer1.id);
+      expect(results[1].pointer.objectId).toEqual(pointer1.id);
+      expect(results.some(result => result.objectId === obj1.id)).toEqual(true);
+      expect(results.some(result => result.objectId === obj3.id)).toEqual(true);
+      done();
+    });
+  });
+
   it('project query', (done) => {
     const options = Object.assign({}, masterKeyOptions, {
       body: {
@@ -254,10 +483,30 @@ describe('Parse.Query Aggregate testing', () => {
     rp.get(Parse.serverURL + '/aggregate/TestObject', options)
       .then((resp) => {
         resp.results.forEach((result) => {
-          expect(result.name !== undefined).toBe(true);
+          expect(result.objectId).not.toBe(undefined);
+          expect(result.name).not.toBe(undefined);
           expect(result.sender).toBe(undefined);
           expect(result.size).toBe(undefined);
           expect(result.score).toBe(undefined);
+        });
+        done();
+      }).catch(done.fail);
+  });
+
+  it('multiple project query', (done) => {
+    const options = Object.assign({}, masterKeyOptions, {
+      body: {
+        project: { name: 1, score: 1, sender: 1 },
+      }
+    });
+    rp.get(Parse.serverURL + '/aggregate/TestObject', options)
+      .then((resp) => {
+        resp.results.forEach((result) => {
+          expect(result.objectId).not.toBe(undefined);
+          expect(result.name).not.toBe(undefined);
+          expect(result.score).not.toBe(undefined);
+          expect(result.sender).not.toBe(undefined);
+          expect(result.size).toBe(undefined);
         });
         done();
       }).catch(done.fail);
@@ -372,6 +621,23 @@ describe('Parse.Query Aggregate testing', () => {
       }).catch(done.fail);
   });
 
+  it('distinct pointer', (done) => {
+    const pointer1 = new PointerObject();
+    const pointer2 = new PointerObject();
+    const obj1 = new TestObject({ pointer: pointer1 });
+    const obj2 = new TestObject({ pointer: pointer2 });
+    const obj3 = new TestObject({ pointer: pointer1 });
+    Parse.Object.saveAll([pointer1, pointer2, obj1, obj2, obj3]).then(() => {
+      const query = new Parse.Query(TestObject);
+      return query.distinct('pointer');
+    }).then((results) => {
+      expect(results.length).toEqual(2);
+      expect(results.some(result => result.objectId === pointer1.id)).toEqual(true);
+      expect(results.some(result => result.objectId === pointer2.id)).toEqual(true);
+      done();
+    });
+  });
+
   it('distinct class does not exist return empty', (done) => {
     const options = Object.assign({}, masterKeyOptions, {
       body: { distinct: 'unknown' }
@@ -408,5 +674,74 @@ describe('Parse.Query Aggregate testing', () => {
         expect(resp.results.includes('L')).toBe(true);
         done();
       }).catch(done.fail);
+  });
+
+  it('distinct null field', (done) => {
+    const options = Object.assign({}, masterKeyOptions, {
+      body: { distinct: 'distinctField' }
+    });
+    const user1 = new Parse.User();
+    user1.setUsername('distinct_1');
+    user1.setPassword('password');
+    user1.set('distinctField', 'one');
+
+    const user2 = new Parse.User();
+    user2.setUsername('distinct_2');
+    user2.setPassword('password');
+    user2.set('distinctField', null);
+    user1.signUp().then(() => {
+      return user2.signUp();
+    }).then(() => {
+      return rp.get(Parse.serverURL + '/aggregate/_User', options);
+    }).then((resp) => {
+      expect(resp.results.length).toEqual(1);
+      expect(resp.results).toEqual(['one']);
+      done();
+    }).catch(done.fail);
+  });
+
+  it('does not return sensitive hidden properties', (done) => {
+    const options = Object.assign({}, masterKeyOptions, {
+      body: {
+        match: {
+          score: {
+            $gt: 5
+          }
+        },
+      }
+    });
+
+    const username = 'leaky_user';
+    const score = 10;
+
+    const user = new Parse.User();
+    user.setUsername(username);
+    user.setPassword('password');
+    user.set('score', score);
+    user.signUp().then(function() {
+      return rp.get(Parse.serverURL + '/aggregate/_User', options);
+    }).then(function(resp) {
+      expect(resp.results.length).toBe(1);
+      const result = resp.results[0];
+
+      // verify server-side keys are not present...
+      expect(result._hashed_password).toBe(undefined);
+      expect(result._wperm).toBe(undefined);
+      expect(result._rperm).toBe(undefined);
+      expect(result._acl).toBe(undefined);
+      expect(result._created_at).toBe(undefined);
+      expect(result._updated_at).toBe(undefined);
+
+      // verify createdAt, updatedAt and others are present
+      expect(result.createdAt).not.toBe(undefined);
+      expect(result.updatedAt).not.toBe(undefined);
+      expect(result.objectId).not.toBe(undefined);
+      expect(result.username).toBe(username);
+      expect(result.score).toBe(score);
+
+      done();
+    }).catch(function(err) {
+      fail(err);
+    });
   });
 });
