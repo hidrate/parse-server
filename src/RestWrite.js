@@ -5,7 +5,7 @@
 var SchemaController = require('./Controllers/SchemaController');
 var deepcopy = require('deepcopy');
 
-var Auth = require('./Auth');
+const Auth = require('./Auth');
 var cryptoUtils = require('./cryptoUtils');
 var passwordCrypto = require('./password');
 var Parse = require('parse/node');
@@ -282,7 +282,9 @@ RestWrite.prototype.findUsersWithAuthData = function(authData) {
 RestWrite.prototype.handleAuthData = function(authData) {
   let results;
   return this.findUsersWithAuthData(authData).then((r) => {
-    results = r;
+    results = r.filter((user) => {
+      return !this.auth.isMaster && user.ACL && Object.keys(user.ACL).length > 0;
+    });
     if (results.length > 1) {
       // More than 1 user with the passed id's
       throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED,
@@ -568,29 +570,24 @@ RestWrite.prototype.createSessionToken = function() {
   if (this.auth.installationId && this.auth.installationId === 'cloud') {
     return;
   }
-  var token = 'r:' + cryptoUtils.newToken();
 
-  var expiresAt = this.config.generateSessionExpiresAt();
-  var sessionData = {
-    sessionToken: token,
-    user: {
-      __type: 'Pointer',
-      className: '_User',
-      objectId: this.objectId()
-    },
+  const {
+    sessionData,
+    createSession,
+  } = Auth.createSession(this.config, {
+    userId: this.objectId(),
     createdWith: {
       'action': this.storage['authProvider'] ? 'login' : 'signup',
       'authProvider': this.storage['authProvider'] || 'password'
     },
-    restricted: false,
     installationId: this.auth.installationId,
-    expiresAt: Parse._encode(expiresAt)
-  };
+  });
+
   if (this.response && this.response.response) {
-    this.response.response.sessionToken = token;
+    this.response.response.sessionToken = sessionData.sessionToken;
   }
 
-  return new RestWrite(this.config, Auth.master(this.config), '_Session', null, sessionData).execute();
+  return createSession();
 }
 
 RestWrite.prototype.destroyDuplicatedSessions = function() {
@@ -675,29 +672,23 @@ RestWrite.prototype.handleSession = function() {
   }
 
   if (!this.query && !this.auth.isMaster) {
-    var token = 'r:' + cryptoUtils.newToken();
-    var expiresAt = this.config.generateSessionExpiresAt();
-    var sessionData = {
-      sessionToken: token,
-      user: {
-        __type: 'Pointer',
-        className: '_User',
-        objectId: this.auth.user.id
-      },
-      createdWith: {
-        'action': 'create'
-      },
-      restricted: true,
-      expiresAt: Parse._encode(expiresAt)
-    };
+    const additionalSessionData = {};
     for (var key in this.data) {
       if (key === 'objectId' || key === 'user') {
         continue;
       }
-      sessionData[key] = this.data[key];
+      additionalSessionData[key] = this.data[key];
     }
-    var create = new RestWrite(this.config, Auth.master(this.config), '_Session', null, sessionData);
-    return create.execute().then((results) => {
+
+    const { sessionData, createSession } = Auth.createSession(this.config, {
+      userId: this.auth.user.id,
+      createdWith: {
+        action: 'create',
+      },
+      additionalSessionData
+    });
+
+    return createSession().then((results) => {
       if (!results.response) {
         throw new Parse.Error(Parse.Error.INTERNAL_SERVER_ERROR,
           'Error creating session.');
@@ -991,7 +982,7 @@ RestWrite.prototype.runDatabaseOperation = function() {
   if (this.query) {
     // Force the user to not lockout
     // Matched with parse.com
-    if (this.className === '_User' && this.data.ACL) {
+    if (this.className === '_User' && this.data.ACL && this.auth.isMaster !== true) {
       this.data.ACL[this.query.objectId] = { read: true, write: true };
     }
     // update password timestamp if user password is being changed

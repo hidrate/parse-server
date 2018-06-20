@@ -44,6 +44,7 @@ function RestQuery(config, auth, className, restWhere = {}, restOptions = {}, cl
   }
 
   this.doCount = false;
+  this.includeAll = false;
 
   // The format for this.include is not the same as the format for the
   // include option - it's the paths we should include, in order,
@@ -85,6 +86,9 @@ function RestQuery(config, auth, className, restWhere = {}, restOptions = {}, cl
     }
     case 'count':
       this.doCount = true;
+      break;
+    case 'includeAll':
+      this.includeAll = true;
       break;
     case 'distinct':
     case 'pipeline':
@@ -149,6 +153,8 @@ function RestQuery(config, auth, className, restWhere = {}, restOptions = {}, cl
 RestQuery.prototype.execute = function(executeOptions) {
   return Promise.resolve().then(() => {
     return this.buildRestWhere();
+  }).then(() => {
+    return this.handleIncludeAll();
   }).then(() => {
     return this.runFind(executeOptions);
   }).then(() => {
@@ -337,7 +343,7 @@ RestQuery.prototype.replaceNotInQuery = function() {
 const transformSelect = (selectObject, key ,objects) => {
   var values = [];
   for (var result of objects) {
-    values.push(result[key]);
+    values.push(key.split('.').reduce((o,i)=>o[i], result));
   }
   delete selectObject['$select'];
   if (Array.isArray(selectObject['$in'])) {
@@ -392,7 +398,7 @@ RestQuery.prototype.replaceSelect = function() {
 const transformDontSelect = (dontSelectObject, key, objects) => {
   var values = [];
   for (var result of objects) {
-    values.push(result[key]);
+    values.push(key.split('.').reduce((o,i)=>o[i], result));
   }
   delete dontSelectObject['$dontSelect'];
   if (Array.isArray(dontSelectObject['$nin'])) {
@@ -552,6 +558,31 @@ RestQuery.prototype.runCount = function() {
     });
 };
 
+// Augments this.response with all pointers on an object
+RestQuery.prototype.handleIncludeAll = function() {
+  if (!this.includeAll) {
+    return;
+  }
+  return this.config.database.loadSchema()
+    .then(schemaController => schemaController.getOneSchema(this.className))
+    .then(schema => {
+      const includeFields = [];
+      const keyFields = [];
+      for (const field in schema.fields) {
+        if (schema.fields[field].type && schema.fields[field].type === 'Pointer') {
+          includeFields.push([field]);
+          keyFields.push(field);
+        }
+      }
+      // Add fields to include, keys, remove dups
+      this.include = [...new Set([...this.include, ...includeFields])];
+      // if this.keys not set, then all keys are already included
+      if (this.keys) {
+        this.keys = [...new Set([...this.keys, ...keyFields])];
+      }
+    });
+};
+
 // Augments this.response with data at the paths provided in this.include.
 RestQuery.prototype.handleInclude = function() {
   if (this.include.length == 0) {
@@ -584,9 +615,24 @@ RestQuery.prototype.runAfterFindTrigger = function() {
   if (!hasAfterFindHook) {
     return Promise.resolve();
   }
+  // Skip Aggregate and Distinct Queries
+  if (this.findOptions.pipeline || this.findOptions.distinct) {
+    return Promise.resolve();
+  }
   // Run afterFind trigger and set the new results
   return triggers.maybeRunAfterFindTrigger(triggers.Types.afterFind, this.auth, this.className,this.response.results, this.config).then((results) => {
-    this.response.results = results;
+    // Ensure we properly set the className back
+    if (this.redirectClassName) {
+      this.response.results = results.map((object) => {
+        if (object instanceof Parse.Object) {
+          object = object.toJSON();
+        }
+        object.className = this.redirectClassName;
+        return object;
+      });
+    } else {
+      this.response.results = results;
+    }
   });
 };
 

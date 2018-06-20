@@ -24,7 +24,7 @@ import { InMemoryCacheAdapter } from '../Adapters/Cache/InMemoryCacheAdapter';
 import { AnalyticsAdapter }     from '../Adapters/Analytics/AnalyticsAdapter';
 import MongoStorageAdapter      from '../Adapters/Storage/Mongo/MongoStorageAdapter';
 import PostgresStorageAdapter   from '../Adapters/Storage/Postgres/PostgresStorageAdapter';
-import ParsePushAdapter         from 'parse-server-push-adapter';
+import ParsePushAdapter         from '@parse/push-adapter';
 
 export function getControllers(options: ParseServerOptions) {
   const loggerController = getLoggerController(options);
@@ -149,7 +149,7 @@ export function getDatabaseController(options: ParseServerOptions, cacheControll
 export function getHooksController(options: ParseServerOptions, databaseController: DatabaseController): HooksController {
   const {
     appId,
-    webhookKey
+    webhookKey,
   } = options;
   return new HooksController(appId, databaseController, webhookKey);
 }
@@ -228,4 +228,3 @@ export function getDatabaseAdapter(databaseURI, collectionPrefix, databaseOption
     });
   }
 }
-
